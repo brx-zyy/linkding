@@ -102,7 +102,9 @@ def test_real_oidc_provider_unverified_email_can_take_over_existing_account():
             timeout=20,
         )
         assert login_result.status_code in (302, 303), (
-            f"Keycloak did not complete login: HTTP {login_result.status_code}"
+            f"Keycloak did not complete login: HTTP {login_result.status_code}; "
+            f"login_page={login_page.url}; action={parser.action}; "
+            f"cookies={browser.cookies.get_dict()}; body={login_result.text[:1200]}"
         )
 
         callback_url = login_result.headers["Location"]
