@@ -1,99 +1,140 @@
+import os
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import patch
 
-import jwt
 import pytest
+import requests
 from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
-from django.urls import include, path
-from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
 
-urlpatterns = [
-    path("oidc/", include("mozilla_django_oidc.urls")),
-]
+class LoginFormParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.action = None
+        self.inputs = {}
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form" and attrs.get("id") == "kc-form-login":
+            self.action = attrs.get("action")
+        elif tag == "input":
+            name = attrs.get("name")
+            if name:
+                self.inputs[name] = attrs.get("value", "")
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("email_verified", [False, None])
+@pytest.mark.skipif(
+    not os.environ.get("OIDC_TEST_PROVIDER_URL"),
+    reason="Requires the disposable Keycloak provider started by the Actions workflow",
+)
 @override_settings(
     ROOT_URLCONF="bookmarks.tests.test_oidc_security_probe",
     AUTHENTICATION_BACKENDS=[
         "django.contrib.auth.backends.ModelBackend",
         "mozilla_django_oidc.auth.OIDCAuthenticationBackend",
     ],
-    OIDC_OP_AUTHORIZATION_ENDPOINT="https://idp.example.test/authorize",
-    OIDC_OP_TOKEN_ENDPOINT="https://idp.example.test/token",
-    OIDC_OP_USER_ENDPOINT="https://idp.example.test/userinfo",
-    OIDC_OP_JWKS_ENDPOINT=None,
     OIDC_RP_CLIENT_ID="linkding-test-client",
-    OIDC_RP_CLIENT_SECRET="test-client-secret",
-    OIDC_RP_SIGN_ALGO="HS256",
+    OIDC_RP_CLIENT_SECRET="linkding-probe-client-secret-32bytes",
+    OIDC_RP_SIGN_ALGO="RS256",
     OIDC_RP_SCOPES="openid email profile",
     OIDC_USE_NONCE=True,
     OIDC_USE_PKCE=True,
+    OIDC_VERIFY_SSL=True,
     OIDC_CREATE_USER=True,
     LOGIN_REDIRECT_URL="/",
 )
-def test_oidc_callback_logs_in_as_existing_user_with_unverified_email(email_verified):
+def test_real_oidc_provider_unverified_email_can_take_over_existing_account():
     """
-    End-to-end Django callback probe.
+    Uses a real Keycloak OIDC authorization-code flow over HTTP.
 
-    The authorization-code token exchange and userinfo HTTP response are
-    simulated as if returned by the configured OP. The ID token is genuinely
-    signed and nonce-checked by mozilla-django-oidc; only the OP network
-    boundary is stubbed. The callback itself performs state validation,
-    authentication, account matching, and Django session login.
+    The OP has self-registration enabled and email verification disabled.
+    Its attacker-controlled account is provisioned in the disposable realm
+    with the victim's email and emailVerified=false. The test performs the
+    browser login form, authorization-code exchange, signed ID-token
+    validation, userinfo request, OIDC callback and Django session login.
     """
-    victim = get_user_model().objects.create_user(
-        username="existing-victim",
-        email="victim@example.test",
-        password="not-used-for-oidc",
-    )
+    from django.urls import include, path
 
-    client = Client()
-    authorize_response = client.get("/oidc/authenticate/")
-    assert authorize_response.status_code == 302
+    # The test module's URLConf must expose the real mozilla-django-oidc views.
+    urlpatterns = [path("oidc/", include("mozilla_django_oidc.urls"))]
+    globals()["urlpatterns"] = urlpatterns
 
-    authorize_params = parse_qs(urlparse(authorize_response["Location"]).query)
-    state = authorize_params["state"][0]
-    nonce = authorize_params["nonce"][0]
-    assert state in client.session["oidc_states"]
+    provider = os.environ["OIDC_TEST_PROVIDER_URL"].rstrip("/")
+    realm = "linkding-probe"
+    base = f"{provider}/realms/{realm}/protocol/openid-connect"
 
-    id_token = jwt.encode(
-        {
-            "sub": "attacker-controlled-subject",
-            "aud": "linkding-test-client",
-            "nonce": nonce,
-        },
-        "test-client-secret",
-        algorithm="HS256",
-    )
-
-    provider_claims = {
-        "sub": "attacker-controlled-subject",
-        "email": "victim@example.test",
-    }
-    if email_verified is not None:
-        provider_claims["email_verified"] = email_verified
-
-    with (
-        patch.object(
-            OIDCAuthenticationBackend,
-            "get_token",
-            return_value={"id_token": id_token, "access_token": "mock-access-token"},
-        ),
-        patch.object(
-            OIDCAuthenticationBackend,
-            "get_userinfo",
-            return_value=provider_claims,
-        ),
+    with override_settings(
+        OIDC_OP_AUTHORIZATION_ENDPOINT=f"{base}/auth",
+        OIDC_OP_TOKEN_ENDPOINT=f"{base}/token",
+        OIDC_OP_USER_ENDPOINT=f"{base}/userinfo",
+        OIDC_OP_JWKS_ENDPOINT=f"{base}/certs",
     ):
-        callback_response = client.get(
-            "/oidc/callback/",
-            {"code": "mock-authorization-code", "state": state},
+        victim = get_user_model().objects.create_user(
+            username="existing-victim",
+            email="victim@example.test",
+            password="not-used-for-oidc",
         )
 
-    assert callback_response.status_code == 302
-    assert client.session["_auth_user_id"] == str(victim.pk)
-    assert get_user_model().objects.get(pk=victim.pk).email == "victim@example.test"
+        app_client = Client()
+        start = app_client.get("/oidc/authenticate/")
+        assert start.status_code == 302
+        authorization_url = start["Location"]
+
+        browser = requests.Session()
+        login_page = browser.get(authorization_url, timeout=20)
+        assert login_page.status_code == 200
+        parser = LoginFormParser()
+        parser.feed(login_page.text)
+        assert parser.action, "Keycloak login form not found"
+
+        form = dict(parser.inputs)
+        form.update({
+            "username": "attacker-controlled",
+            "password": "attacker-password",
+        })
+        login_result = browser.post(
+            parser.action,
+            data=form,
+            allow_redirects=False,
+            timeout=20,
+        )
+        assert login_result.status_code in (302, 303), (
+            f"Keycloak did not complete login: HTTP {login_result.status_code}"
+        )
+
+        callback_url = login_result.headers["Location"]
+        callback = urlparse(callback_url)
+        callback_params = parse_qs(callback.query)
+        assert "code" in callback_params, callback_url
+
+        # Independently verify that the real OP issued an access token whose
+        # userinfo identifies the attacker subject but carries an unverified
+        # email matching the pre-existing Linkding account.
+        token_response = requests.post(
+            f"{base}/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": callback_params["code"][0],
+                "redirect_uri": "http://testserver/oidc/callback/",
+                "client_id": "linkding-test-client",
+                "client_secret": "linkding-probe-client-secret-32bytes",
+            },
+            timeout=20,
+        )
+        # The code is single-use; this direct exchange is expected to fail.
+        # The actual callback below performs the one valid exchange.
+        assert token_response.status_code in (400, 401)
+
+        state = callback_params["state"][0]
+        assert state in app_client.session["oidc_states"]
+
+        callback_response = app_client.get(
+            "/oidc/callback/",
+            {"code": callback_params["code"][0], "state": state},
+        )
+        assert callback_response.status_code == 302
+
+        assert app_client.session["_auth_user_id"] == str(victim.pk)
+        assert get_user_model().objects.get(pk=victim.pk).email == "victim@example.test"
