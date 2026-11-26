@@ -1,0 +1,26 @@
+name: OIDC email verification security probe
+
+on:
+  push:
+    branches:
+      - audit/oidc-email-verified-check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oidc-claim-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install project and test dependencies
+        run: uv sync --locked --group dev
+      - name: Run OIDC identity matching probe
+        run: uv run pytest bookmarks/tests/test_oidc_security_probe.py -q
