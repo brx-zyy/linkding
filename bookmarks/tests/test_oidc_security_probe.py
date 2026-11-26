@@ -1,15 +1,27 @@
 import pytest
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("email_verified", [False, None])
+@override_settings(
+    OIDC_OP_AUTHORIZATION_ENDPOINT="https://idp.example.test/authorize",
+    OIDC_OP_TOKEN_ENDPOINT="https://idp.example.test/token",
+    OIDC_OP_USER_ENDPOINT="https://idp.example.test/userinfo",
+    OIDC_OP_JWKS_ENDPOINT="https://idp.example.test/jwks",
+    OIDC_RP_CLIENT_ID="linkding-test-client",
+    OIDC_RP_CLIENT_SECRET="test-secret",
+    OIDC_RP_SIGN_ALGO="RS256",
+    OIDC_RP_SCOPES="openid email profile",
+    OIDC_VERIFY_SSL=True,
+    OIDC_USE_PKCE=True,
+)
 def test_oidc_claims_can_match_existing_account_without_verified_email(email_verified):
     """
-    Regression probe: Linkding's default OIDC backend is configured to use
-    mozilla-django-oidc. Check whether an OP-supplied email claim is accepted
-    as an identity key even when email_verified is false or absent.
+    Probe whether Linkding's pinned OIDC backend accepts an email claim as an
+    identity key when email_verified is false or absent.
     """
     victim = get_user_model().objects.create_user(
         username="existing-victim",
@@ -26,11 +38,9 @@ def test_oidc_claims_can_match_existing_account_without_verified_email(email_ver
 
     backend = OIDCAuthenticationBackend()
 
-    # If this passes, the backend considers these claims valid for the
-    # configured "openid email profile" scopes.
+    # The configured email scope is accepted based on claim presence.
     assert backend.verify_claims(claims) is True
 
-    # The default backend then resolves the identity by case-insensitive
-    # email, so the claims select the pre-existing local account.
+    # The backend resolves the identity by case-insensitive email.
     matches = backend.filter_users_by_claims(claims)
     assert list(matches.values_list("pk", flat=True)) == [victim.pk]
