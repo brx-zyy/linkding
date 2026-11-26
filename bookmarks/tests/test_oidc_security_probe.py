@@ -105,8 +105,13 @@ def test_real_oidc_provider_unverified_email_can_take_over_existing_account():
                 for cookie in browser.cookies
             ],
         }
-        login_result = browser.send(
-            prepared_login,
+        cookie_header = "; ".join(
+            f"{cookie.name}={cookie.value}" for cookie in browser.cookies
+        )
+        login_result = browser.post(
+            parser.action,
+            data=form,
+            headers={"Cookie": cookie_header},
             allow_redirects=False,
             timeout=20,
         )
