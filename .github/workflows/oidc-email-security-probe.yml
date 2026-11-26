@@ -22,5 +22,7 @@ jobs:
           python-version: "3.13"
       - name: Install project and test dependencies
         run: uv sync --locked --group dev
+      - name: Prepare runtime data directory
+        run: mkdir -p data
       - name: Run OIDC identity matching probe
         run: uv run pytest bookmarks/tests/test_oidc_security_probe.py -q
