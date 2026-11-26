@@ -1,0 +1,52 @@
+{
+  "realm": "linkding-probe",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "clients": [
+    {
+      "clientId": "linkding-test-client",
+      "name": "Linkding OIDC security test",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "linkding-probe-client-secret-32bytes",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://testserver/oidc/callback/"
+      ],
+      "webOrigins": [
+        "http://testserver"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "attacker-controlled",
+      "enabled": true,
+      "email": "victim@example.test",
+      "emailVerified": false,
+      "firstName": "Attacker",
+      "lastName": "Controlled",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "attacker-password",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}
