@@ -36,11 +36,20 @@ def test_oidc_claims_can_match_existing_account_without_verified_email(email_ver
     if email_verified is not None:
         claims["email_verified"] = email_verified
 
-    backend = OIDCAuthenticationBackend()
+    class StubUserInfoBackend(OIDCAuthenticationBackend):
+        def get_userinfo(self, access_token, id_token, payload):
+            return payload["userinfo"]
+
+    backend = StubUserInfoBackend()
 
     # The configured email scope is accepted based on claim presence.
     assert backend.verify_claims(claims) is True
 
-    # The backend resolves the identity by case-insensitive email.
-    matches = backend.filter_users_by_claims(claims)
-    assert list(matches.values_list("pk", flat=True)) == [victim.pk]
+    # Exercise the actual default account-resolution method used after the
+    # signed ID token has been verified and userinfo has been retrieved.
+    authenticated_user = backend.get_or_create_user(
+        "test-access-token",
+        "test-id-token",
+        {"userinfo": claims},
+    )
+    assert authenticated_user.pk == victim.pk
