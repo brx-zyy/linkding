@@ -30,6 +30,7 @@ jobs:
             -p 8080:8080 \
             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
             -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin-test-password \
+            -e KC_HOSTNAME=http://127.0.0.1:8080 \
             -e KC_HOSTNAME_STRICT=false \
             -v "$GITHUB_WORKSPACE/bookmarks/tests/fixtures/oidc-unverified-email-realm.json:/opt/keycloak/data/import/linkding-probe-realm.json:ro" \
             quay.io/keycloak/keycloak:26.4.7 start-dev --import-realm
