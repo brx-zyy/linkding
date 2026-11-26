@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
 
@@ -109,32 +110,29 @@ def test_real_oidc_provider_unverified_email_can_take_over_existing_account():
         callback_params = parse_qs(callback.query)
         assert "code" in callback_params, callback_url
 
-        # Independently verify that the real OP issued an access token whose
-        # userinfo identifies the attacker subject but carries an unverified
-        # email matching the pre-existing Linkding account.
-        token_response = requests.post(
-            f"{base}/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": callback_params["code"][0],
-                "redirect_uri": "http://testserver/oidc/callback/",
-                "client_id": "linkding-test-client",
-                "client_secret": "linkding-probe-client-secret-32bytes",
-            },
-            timeout=20,
-        )
-        # The code is single-use; this direct exchange is expected to fail.
-        # The actual callback below performs the one valid exchange.
-        assert token_response.status_code in (400, 401)
-
         state = callback_params["state"][0]
         assert state in app_client.session["oidc_states"]
 
-        callback_response = app_client.get(
-            "/oidc/callback/",
-            {"code": callback_params["code"][0], "state": state},
-        )
-        assert callback_response.status_code == 302
+        # Observe the real userinfo response without replacing the provider
+        # request. This verifies the exact claim returned by Keycloak.
+        real_get = requests.get
+        observed_userinfo = {}
 
+        def capture_userinfo(*args, **kwargs):
+            response = real_get(*args, **kwargs)
+            if args and args[0].rstrip("/").endswith("/userinfo"):
+                observed_userinfo.update(response.json())
+            return response
+
+        with patch("requests.get", side_effect=capture_userinfo):
+            callback_response = app_client.get(
+                "/oidc/callback/",
+                {"code": callback_params["code"][0], "state": state},
+            )
+
+        assert callback_response.status_code == 302
+        assert observed_userinfo["email"] == "victim@example.test"
+        assert observed_userinfo["email_verified"] is False
+        assert observed_userinfo["sub"] != str(victim.pk)
         assert app_client.session["_auth_user_id"] == str(victim.pk)
         assert get_user_model().objects.get(pk=victim.pk).email == "victim@example.test"
