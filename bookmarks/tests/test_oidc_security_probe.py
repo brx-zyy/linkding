@@ -95,16 +95,26 @@ def test_real_oidc_provider_unverified_email_can_take_over_existing_account():
             "username": "attacker-controlled",
             "password": "attacker-password",
         })
-        login_result = browser.post(
-            parser.action,
-            data=form,
+        prepared_login = browser.prepare_request(
+            requests.Request("POST", parser.action, data=form)
+        )
+        cookie_debug = {
+            "cookie_header": prepared_login.headers.get("Cookie", ""),
+            "cookie_paths": [
+                (cookie.name, cookie.domain, cookie.path)
+                for cookie in browser.cookies
+            ],
+        }
+        login_result = browser.send(
+            prepared_login,
             allow_redirects=False,
             timeout=20,
         )
         assert login_result.status_code in (302, 303), (
             f"Keycloak did not complete login: HTTP {login_result.status_code}; "
             f"login_page={login_page.url}; action={parser.action}; "
-            f"cookies={browser.cookies.get_dict()}; body={login_result.text[:1200]}"
+            f"cookies={browser.cookies.get_dict()}; cookie_debug={cookie_debug}; "
+            f"body={login_result.text[:1200]}"
         )
 
         callback_url = login_result.headers["Location"]
